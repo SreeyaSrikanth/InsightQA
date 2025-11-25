@@ -1,11 +1,7 @@
 # InsightQA
-RAG-Powered Test Case and Script Generation Agent
-
-Live App:  
 https://insightapp-sreeyasrikanth.streamlit.app/
 
-InsightQA is a QA automation assistant that converts product documents into structured test cases and executable Selenium-style scripts.  
-It uses Retrieval-Augmented Generation and a Llama3 LLM backend to generate grounded, document-based outputs.
+InsightQA is a QA automation assistant that converts product documents into structured test cases and executable Selenium-style scripts. It uses Retrieval-Augmented Generation and a Llama3 LLM backend to generate grounded, document-based outputs.
 
 ---
 
