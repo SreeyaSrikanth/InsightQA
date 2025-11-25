@@ -1,0 +1,18 @@
+Discount Rules – Checkout System
+
+1. Eligible Codes:
+   - SAVE10 → gives 10% off the subtotal.
+   - SAVE5 → gives a flat $5.00 discount.
+
+2. Conditions:
+   - Discount can only be applied if the cart has at least 1 item.
+   - Discount value cannot exceed the subtotal.
+   - Only one discount can be active at a time.
+
+3. Invalid Codes:
+   - Any string not matching the above codes is considered invalid.
+   - Invalid codes result in 0 discount.
+
+4. Edge Cases:
+   - Applying the same code multiple times should not stack discounts.
+   - Case-insensitive matching (e.g., save10, Save10, SAVE10 all valid).

@@ -1,0 +1,34 @@
+{
+  "system": "Checkout Demo – Simulated API Notes",
+  "endpoints": [
+    {
+      "name": "applyDiscount",
+      "description": "Simulated logic for applying discount codes.",
+      "parameters": {
+        "code": "string",
+        "subtotal": "number"
+      },
+      "rules": [
+        "SAVE10 -> 10% of subtotal",
+        "SAVE5 -> flat 5 USD",
+        "All other codes -> discount = 0"
+      ],
+      "edge_cases": [
+        "If subtotal <= 0, discount = 0",
+        "Discount cannot exceed subtotal"
+      ]
+    },
+    {
+      "name": "processPayment",
+      "description": "Simulated client-side validation.",
+      "parameters": {
+        "total": "number",
+        "quantity": "number"
+      },
+      "rules": [
+        "total > 0 and quantity > 0 -> success",
+        "Else -> error"
+      ]
+    }
+  ]
+}
