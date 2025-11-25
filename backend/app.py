@@ -7,15 +7,18 @@ import uuid
 import mimetypes
 import shutil
 
-from . import parsers
-from .vectordb import add_chunks, _get_collection
-from .rag_agent import generate_testcases_rag
-from .selenium_generator import generate_selenium_script
-from .db import get_db, KnowledgeBase, Document
+import parsers
+from vectordb import add_chunks, _get_collection
+from rag_agent import generate_testcases_rag
+from selenium_generator import generate_selenium_script
+from db import get_db, KnowledgeBase, Document
 
 from sqlalchemy.orm import Session
 
 app = FastAPI(title="InsightQA Backend")
+from db import init_db
+
+init_db()
 
 # CORS for Streamlit
 app.add_middleware(
@@ -27,16 +30,17 @@ app.add_middleware(
 
 ASSETS_DIR = Path("assets")
 
+
 class TestCaseRequest(BaseModel):
-    kb_id: str           # which knowledge base to use
+    kb_id: str
     query: str
     top_k: int = 5
 
 
 class ScriptRequest(BaseModel):
-    kb_id: str           # which knowledge base
+    kb_id: str
     testcase: Dict[str, Any]
-    html_filename: str   # which HTML/UI file within that KB
+    html_filename: str
 
 
 @app.get("/health")
@@ -46,19 +50,11 @@ def health():
 
 # ---------- Ingestion ----------
 @app.post("/ingest")
-@app.post("/ingest")
 async def ingest(
     name: str = Form(...),
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
 ):
-    """
-    Generic ingestion:
-      - Create a new KnowledgeBase (one per 'Build Knowledge Base' action)
-      - Save ALL uploaded files to assets/<kb_id>/<filename>
-      - Mark the first HTML as 'main'
-      - All files are chunked and stored in the vector DB with kb_id + role
-    """
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
@@ -87,11 +83,10 @@ async def ingest(
         role = "main" if is_html and not primary_html_set else "support"
         is_primary_html = is_html and not primary_html_set
 
-        # 1) Save to assets/<kb_id>/<filename>
+        # Save file
         save_path = kb_dir / filename
         save_path.write_bytes(raw)
 
-        # 2) Create Document row
         doc_row = Document(
             kb_id=kb_id,
             filename=filename,
@@ -106,17 +101,17 @@ async def ingest(
         if is_primary_html:
             primary_html_set = True
 
-        # 3) Parse for knowledge base
+        # Parse
         text = parsers.parse_any(filename, raw)
 
-        # naive chunking
         CHUNK_SIZE = 800
         OVERLAP = 150
         start_idx = 0
         while start_idx < len(text):
-            chunk = text[start_idx : start_idx + CHUNK_SIZE]
+            chunk = text[start_idx:start_idx + CHUNK_SIZE]
             start_idx += CHUNK_SIZE - OVERLAP
             chunk_id = str(uuid.uuid4())
+
             docs_chunks.append(chunk)
             docs_meta.append(
                 {
@@ -140,7 +135,7 @@ async def ingest(
 
     db.commit()
 
-    # 4) Add to vector DB
+    # Store chunks
     add_chunks(docs_chunks, docs_meta, ids)
 
     return {
@@ -152,27 +147,19 @@ async def ingest(
     }
 
 
-# ---------- RAG test case generation ----------
 @app.post("/agent/testcases")
 def generate_testcases(req: TestCaseRequest):
-    """
-    Generate test cases using only chunks from the selected KB.
-    Here we filter to doc_role='support' so specs/docs drive the tests.
-    If you also want HTML text in context, use doc_roles=["support","main"].
-    """
     out = generate_testcases_rag(
         user_query=req.query,
         top_k=req.top_k,
         kb_id=req.kb_id,
-        doc_roles=["main","support"]
+        doc_roles=["main", "support"]
     )
     return out
 
 
-# ---------- Selenium script generation ----------
 @app.post("/agent/generate_script")
 def generate_script(req: ScriptRequest, db: Session = Depends(get_db)):
-    # Look up the document to ensure it belongs to this kb_id
     doc = (
         db.query(Document)
         .filter(
@@ -186,12 +173,12 @@ def generate_script(req: ScriptRequest, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(
             status_code=400,
-            detail=f"HTML file '{req.html_filename}' not found for kb_id='{req.kb_id}'. "
-                   "Make sure you uploaded it in this knowledge base.",
+            detail=f"HTML file '{req.html_filename}' not found for kb_id='{req.kb_id}'."
         )
 
     script = generate_selenium_script(req.testcase, doc.path)
     return {"script": script}
+
 
 @app.get("/kb/list")
 def list_kbs(db: Session = Depends(get_db)):
@@ -200,6 +187,7 @@ def list_kbs(db: Session = Depends(get_db)):
         .order_by(KnowledgeBase.created_at.desc())
         .all()
     )
+
     out = []
     for kb in kbs:
         docs = (
@@ -211,7 +199,7 @@ def list_kbs(db: Session = Depends(get_db)):
         out.append(
             {
                 "kb_id": kb.id,
-                "kb_name": kb.name,              # <-- ADD THIS
+                "kb_name": kb.name,
                 "created_at": kb.created_at.isoformat(),
                 "documents": [
                     {
@@ -227,14 +215,17 @@ def list_kbs(db: Session = Depends(get_db)):
         )
     return out
 
+
 @app.post("/kb/rename")
 def rename_kb(kb_id: str = Form(...), new_name: str = Form(...), db: Session = Depends(get_db)):
     kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
     if not kb:
         raise HTTPException(status_code=404, detail="KB not found")
+
     kb.name = new_name
     db.commit()
     return {"status": "ok", "kb_id": kb_id, "new_name": new_name}
+
 
 @app.post("/kb/delete")
 def delete_kb(kb_id: str = Form(...), db: Session = Depends(get_db)):
@@ -242,24 +233,21 @@ def delete_kb(kb_id: str = Form(...), db: Session = Depends(get_db)):
     if not kb:
         raise HTTPException(status_code=404, detail="KB not found")
 
-    # Delete documents
     docs = db.query(Document).filter(Document.kb_id == kb_id).all()
     for doc in docs:
         db.delete(doc)
 
-    # Delete KB row
     db.delete(kb)
     db.commit()
 
-    # Delete vector DB entries
     coll = _get_collection()
     coll.delete(where={"kb_id": kb_id})
 
-    # Delete file directory
     kb_dir = Path(f"assets/{kb_id}")
     shutil.rmtree(kb_dir, ignore_errors=True)
 
     return {"status": "ok", "deleted_kb_id": kb_id}
+
 
 @app.get("/kb/view/{kb_id}")
 def view_kb(kb_id: str, db: Session = Depends(get_db)):

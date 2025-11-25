@@ -5,7 +5,7 @@ import json
 # ---------------------------------------
 # BACKEND URL INPUT
 # ---------------------------------------
-BACKEND_URL = st.sidebar.text_input("Backend URL", "http://127.0.0.1:8000")
+BACKEND_URL = st.sidebar.text_input("Backend URL", "https://insightqan-production.up.railway.app")
 
 st.title("InsightQA")
 

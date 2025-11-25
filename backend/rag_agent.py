@@ -1,10 +1,12 @@
 """
-RAG-based test case generator using Ollama.
+RAG-based test case generator adapted for Groq.
 
 - Retrieves top-k chunks from the vector DB
 - Builds a strict JSON-only prompt
-- Calls Ollama
-- Parses JSON into Python objects
+- Calls Groq LLM
+- Tries to parse JSON
+- If parsing fails → tries auto-repair
+- If still fails → returns raw output so Streamlit can show it
 """
 
 from __future__ import annotations
@@ -12,9 +14,10 @@ from __future__ import annotations
 from typing import List, Dict, Any
 import json
 import re
+import ast
 
-from .vectordb import query as vectordb_query
-from .llm_ollama import chat, DEFAULT_MODEL, LLMError
+from vectordb import query as vectordb_query
+from llm_ollama import chat, DEFAULT_MODEL, LLMError
 
 
 # ------------------ Prompt builder ------------------ #
@@ -31,59 +34,97 @@ def build_prompt(user_query: str, context_chunks: List[Dict[str, Any]]) -> str:
     prompt = f"""
 You are a senior QA engineer.
 
-You are given:
-- A user request for test cases.
-- Context snippets from product documentation and UI specs.
+Your job:
+Generate ONLY a valid JSON array of software test cases.
+
+STRICT RULES:
+- Output MUST be valid JSON.
+- Output MUST start with '[' and end with ']'.
+- No prose, no explanation, no markdown, no headings.
+- Each element must include:
+  "Test_ID", "Feature", "Test_Scenario",
+  "Steps", "Expected_Result", "Type", "Grounded_In"
 
 USER REQUEST:
 {user_query}
 
-CONTEXT SNIPPETS:
+RETRIEVED CONTEXT:
 {context_block}
 
-TASK:
-1. Use ONLY the information in the CONTEXT. Do NOT invent features or behavior that is not described.
-2. Generate a JSON ARRAY of test cases. Do NOT include any explanation outside the JSON.
-3. Each element in the array MUST be an object with EXACTLY these keys:
-
-   - "Test_ID": string like "TC-001", "TC-002", ...
-   - "Feature": short string feature name
-   - "Test_Scenario": one-sentence description
-   - "Steps": array of step strings
-   - "Expected_Result": one-sentence expected outcome
-   - "Type": "Positive" or "Negative"
-   - "Grounded_In": array of source_document names you used
-
-4. Ensure JSON is valid and directly parseable.
-5. Start your answer with '[' and end with ']'. No backticks, no markdown, no extra text.
+Now output ONLY the JSON array. If the JSON would be invalid, FIX it first.
 """
     return prompt.strip()
 
 
-# ------------------ JSON parsing helper ------------------ #
-def _extract_json_array(text: str) -> Any:
+# ------------------ JSON extraction helper ------------------ #
+def _clean_and_parse_json(text: str):
     """
-    Extract a JSON array from the model's response.
-    We expect the whole response to be the array, but we are robust to minor wrappers.
+    Attempt to extract JSON even if malformed.
     """
-    # Strip markdown fences if present
-    fenced = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
+    raw = text.strip()
+
+    # Remove code fences
+    fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
     if fenced:
-        text = fenced.group(1).strip()
+        raw = fenced.group(1).strip()
 
-    # If it already starts with [ and ends with ], use directly
-    text = text.strip()
-    if text.startswith("[") and text.endswith("]"):
-        return json.loads(text)
+    # Extract everything between first '[' and last ']'
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON array found.")
 
-    # Fallback: grab the first [...] block
-    m = re.search(r"\[.*\]", text, re.DOTALL)
-    if not m:
-        raise ValueError("No JSON array found in LLM output.")
-    return json.loads(m.group(0))
+    json_candidate = raw[start:end+1]
+
+    # Remove trailing commas
+    json_candidate = re.sub(r",\s*]", "]", json_candidate)
+    json_candidate = re.sub(r",\s*}", "}", json_candidate)
+
+    # Try direct json.loads
+    try:
+        return json.loads(json_candidate)
+    except:
+        pass
+
+    # Try Python literal eval fallback
+    py_friendly = (
+        json_candidate.replace("null", "None")
+                      .replace("true", "True")
+                      .replace("false", "False")
+    )
+
+    try:
+        return ast.literal_eval(py_friendly)
+    except Exception as e:
+        raise ValueError(f"JSON remained invalid: {e}\nCandidate:\n{json_candidate}")
 
 
-# ------------------ Public RAG function ------------------ #
+# ------------------ Auto-repair using LLM ------------------ #
+def _attempt_json_repair(bad_output: str, model: str):
+    """
+    Ask LLM to fix broken JSON and return corrected version.
+    """
+    repair_prompt = (
+        "Fix the following JSON. "
+        "Output ONLY the corrected JSON array. No explanation.\n\n"
+        + bad_output
+    )
+
+    repaired = chat(
+        model,
+        [
+            {
+                "role": "system",
+                "content": "You ONLY fix JSON. Respond ONLY with valid JSON array."
+            },
+            {"role": "user", "content": repair_prompt},
+        ],
+    )
+
+    return repaired
+
+
+# ------------------ Main RAG function ------------------ #
 def generate_testcases_rag(
     user_query: str,
     top_k: int = 5,
@@ -91,14 +132,10 @@ def generate_testcases_rag(
     doc_roles: list[str] | None = None,
     model: str | None = None,
 ) -> Dict[str, Any]:
-    """
-    RAG test generation restricted to a specific KB and optionally certain doc roles.
-    doc_roles examples:
-        ["support"]           # only support docs
-        ["main", "support"]   # both
-        None                  # no role filter, all docs
-    """
-    # 1) Retrieve relevant chunks from vector DB
+
+    used_model = model or DEFAULT_MODEL
+
+    # 1) Retrieve relevant chunks
     retrieval = vectordb_query(
         user_query,
         top_k=top_k,
@@ -107,38 +144,72 @@ def generate_testcases_rag(
     )
     chunks = retrieval["results"]
 
-    # 2) Build strict JSON prompt
+    # 2) Build LLM prompt
     prompt = build_prompt(user_query, chunks)
 
-    # 3) Call Ollama
-    used_model = model or DEFAULT_MODEL
+    # 3) Call LLM
     try:
-        content = chat(
+        raw_output = chat(
             used_model,
             [
                 {
                     "role": "system",
-                    "content": "You generate high-quality software test cases strictly in JSON.",
+                    "content": (
+                        "You produce ONLY valid JSON arrays. "
+                        "No markdown, no explanation, no reasoning."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
         )
     except LLMError as e:
-        raise
+        return {
+            "error": f"LLM Error: {e}",
+            "raw_llm_output": None,
+            "json_valid": False,
+            "retrieved_chunks": chunks,
+            "prompt_used": prompt,
+        }
 
-    # 4) Parse JSON array
+    # 4) Try parsing JSON directly
     try:
-        testcases = _extract_json_array(content)
-    except Exception as e:
-        raise ValueError(f"Failed to parse JSON testcases from LLM output: {e}")
+        parsed = _clean_and_parse_json(raw_output)
+        return {
+            "model": used_model,
+            "kb_id": kb_id,
+            "testcases": parsed,
+            "raw_llm_output": raw_output,
+            "json_valid": True,
+            "retrieved_chunks": chunks,
+            "prompt_used": prompt,
+        }
+    except Exception as e1:
+        pass  # Try auto-repair
 
-    if not isinstance(testcases, list):
-        raise ValueError("LLM output is not a JSON array of test cases.")
+    # 5) Attempt JSON repair
+    try:
+        repaired_text = _attempt_json_repair(raw_output, used_model)
+        parsed_repaired = _clean_and_parse_json(repaired_text)
 
-    return {
-        "model": used_model,
-        "kb_id": kb_id,
-        "testcases": testcases,
-        "retrieved_chunks": chunks,
-        "prompt_used": prompt,
-    }
+        return {
+            "model": used_model,
+            "kb_id": kb_id,
+            "testcases": parsed_repaired,
+            "raw_llm_output": raw_output,
+            "repaired_output": repaired_text,
+            "json_valid": True,
+            "retrieved_chunks": chunks,
+            "prompt_used": prompt,
+        }
+
+    except Exception as e2:
+        # Total failure → return raw output for debugging
+        return {
+            "model": used_model,
+            "kb_id": kb_id,
+            "error": f"JSON failed twice: {e1} | Repair failed: {e2}",
+            "raw_llm_output": raw_output,
+            "json_valid": False,
+            "retrieved_chunks": chunks,
+            "prompt_used": prompt,
+        }

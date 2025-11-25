@@ -1,55 +1,56 @@
 """
-Thin wrapper around the local Ollama HTTP API.
-
-Default:
-- BASE URL: http://localhost:11434 (override with OLLAMA_BASE_URL)
-- MODEL:    llama3.1 (override with OLLAMA_MODEL)
+Thin wrapper around the Groq API (replacing local Ollama).
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Dict, Any
-import requests
+from typing import List, Dict
+from groq import Groq
 
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+# Read API key from Railway environment variable
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# Best Groq model for speed + reliability
+DEFAULT_MODEL = "llama-3.1-8b-instant"
 
 
 class LLMError(RuntimeError):
+    """Custom error class for LLM-related problems."""
     pass
 
 
 def chat(model: str, messages: List[Dict[str, str]]) -> str:
     """
-    Call Ollama's /api/chat endpoint with non-streaming response.
-    messages: [{"role": "system"|"user"|"assistant", "content": "..."}]
-    Returns the assistant's content as a string.
+    Wrapper for Groq's streaming chat API.
+    Returns the final combined text, matching original Ollama behavior.
     """
-    url = f"{OLLAMA_BASE_URL}/api/chat"
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-    }
+
+    if not GROQ_API_KEY:
+        raise LLMError("Missing GROQ_API_KEY environment variable")
+
+    client = Groq(api_key=GROQ_API_KEY)
 
     try:
-        resp = requests.post(url, json=payload, timeout=300)
-    except requests.RequestException as e:
-        raise LLMError(f"Failed to reach Ollama at {OLLAMA_BASE_URL}: {e}")
+        # Note: stream=True to match your original interface
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=1.0,
+            max_completion_tokens=1024,
+            top_p=1.0,
+            stream=True,
+        )
 
-    if resp.status_code != 200:
-        raise LLMError(f"Ollama error {resp.status_code}: {resp.text}")
+        output_text = ""
 
-    data = resp.json()
+        for chunk in completion:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                output_text += delta.content
 
-    # Newer Ollama /api/chat returns a single JSON object with "message"
-    if "message" in data and "content" in data["message"]:
-        return data["message"]["content"]
+        return output_text
 
-    # Some versions may stream or structure differently; handle basic fallback
-    if "content" in data:
-        return data["content"]
-
-    raise LLMError(f"Unexpected Ollama response shape: {data}")
+    except Exception as e:
+        raise LLMError(f"Groq API error: {str(e)}")
