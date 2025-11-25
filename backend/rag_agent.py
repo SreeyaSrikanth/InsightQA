@@ -16,8 +16,8 @@ import json
 import re
 import ast
 
-from vectordb import query as vectordb_query
-from llm_ollama import chat, DEFAULT_MODEL, LLMError
+from .vectordb import query as vectordb_query
+from .llm_ollama import chat, DEFAULT_MODEL, LLMError
 
 
 # ------------------ Prompt builder ------------------ #

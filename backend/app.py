@@ -7,16 +7,16 @@ import uuid
 import mimetypes
 import shutil
 
-import parsers
-from vectordb import add_chunks, _get_collection
-from rag_agent import generate_testcases_rag
-from selenium_generator import generate_selenium_script
-from db import get_db, KnowledgeBase, Document
+from . import parsers
+from .vectordb import add_chunks, _get_collection
+from .rag_agent import generate_testcases_rag
+from .selenium_generator import generate_selenium_script
+from .db import get_db, KnowledgeBase, Document
 
 from sqlalchemy.orm import Session
 
 app = FastAPI(title="InsightQA Backend")
-from db import init_db
+from .db import init_db
 
 init_db()
 

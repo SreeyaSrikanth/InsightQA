@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from typing import Dict, Any, List
 import json
 
-from llm_ollama import chat, DEFAULT_MODEL, LLMError
+from .llm_ollama import chat, DEFAULT_MODEL, LLMError
 
 
 # -----------------------------

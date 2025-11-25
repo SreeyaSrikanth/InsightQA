@@ -7,7 +7,7 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.config import Settings
 
-from embeddings import embed_texts, embed_text   # ✅ FIXED IMPORT
+from .embeddings import embed_texts, embed_text   # ✅ FIXED IMPORT
 
 CHROMA_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
 _COLLECTION_NAME = "insightqa"
